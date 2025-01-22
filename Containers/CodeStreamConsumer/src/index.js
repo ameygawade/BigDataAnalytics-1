@@ -14,6 +14,7 @@ const FileStorage = require('./FileStorage');
 // --------------------
 const form = formidable({multiples:false});
 
+
 app.post('/', fileReceiver );
 function fileReceiver(req, res, next) {
     form.parse(req, (err, fields, files) => {
@@ -127,28 +128,36 @@ function maybePrintStatistics(file, cloneDetector, cloneStore) {
 function processFile(filename, contents) {
     let cd = new CloneDetector();
     let cloneStore = CloneStorage.getInstance();
+    console.log(`File: ${filename}, Contents Length: ${contents.length}`);
+    if (contents.trim().length === 0) {
+        console.error(`File ${filename} has empty or whitespace-only contents!`);
+    } else {
+        console.log(`File: ${filename} has non-empty contents.`);
+    }
+    return Promise.resolve({ name: filename, contents: contents })
+        .then((file) => {
+            console.log(`Processing File: ${file.name}`);
+            return Timer.startTimer(file, 'total');
+        })
+        .then((file) => cd.preprocess(file))
+        .then((file) => cd.transform(file))
+        .then((file) => {
+            // Log the number of lines after processing
+            console.log(`File Processed: ${file.name}, Lines After Processing: ${file.lines.length}`);
+            return file;
+        })
+        .then((file) => Timer.startTimer(file, 'match'))
+        .then((file) => cd.matchDetect(file))
+        .then((file) => cloneStore.storeClones(file))
+        .then((file) => Timer.endTimer(file, 'match'))
+        .then((file) => cd.storeFile(file))
+        .then((file) => Timer.endTimer(file, 'total'))
+        .then(PASS((file) => (lastFile = file)))
+        .then(PASS((file) => maybePrintStatistics(file, cd, cloneStore)))
+        .catch(console.log);
+}
 
-    return Promise.resolve({name: filename, contents: contents} )
-        //.then( PASS( (file) => console.log('Processing file:', file.name) ))
-        .then( (file) => Timer.startTimer(file, 'total') )
-        .then( (file) => cd.preprocess(file) )
-        .then( (file) => cd.transform(file) )
 
-        .then( (file) => Timer.startTimer(file, 'match') )
-        .then( (file) => cd.matchDetect(file) )
-        .then( (file) => cloneStore.storeClones(file) )
-        .then( (file) => Timer.endTimer(file, 'match') )
-
-        .then( (file) => cd.storeFile(file) )
-        .then( (file) => Timer.endTimer(file, 'total') )
-        .then( PASS( (file) => lastFile = file ))
-        .then( PASS( (file) => maybePrintStatistics(file, cd, cloneStore) ))
-    // TODO Store the timers from every file (or every 10th file), create a new landing page /timers
-    // and display more in depth statistics there. Examples include:
-    // average times per file, average times per last 100 files, last 1000 files.
-    // Perhaps throw in a graph over all files.
-        .catch( console.log );
-};
 
 /*
 1. Preprocessing: Remove uninteresting code, determine source and comparison units/granularities
@@ -158,3 +167,57 @@ function processFile(filename, contents) {
 5. Post-Processing and Filtering: Visualisation of clones and manual analysis to filter out false positives
 6. Aggregation: Clone pairs are aggregated to form clone classes or families, in order to reduce the amount of data and facilitate analysis.
 */
+function calculateMedian(arr) {
+    const sorted = arr.slice().sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+app.get('/timers', (req, res) => {
+    const fs = FileStorage.getInstance();
+    const files = [...fs.getAllFiles()];
+    const timers = files.map(file => Timer.getTimers(file));
+    const fileSizes = files.map(file => (file.lines || []).length);
+
+    let totalTime = 0n, matchTime = 0n, totalLines = 0;
+    const fileCount = timers.length;
+
+    files.forEach(file => {
+        const fileTimers = Timer.getTimers(file);
+        totalTime += fileTimers['total'] || 0n;
+        matchTime += fileTimers['match'] || 0n;
+        totalLines += (file.lines || []).length;
+    });
+
+    const avgTotalTime = totalTime / BigInt(fileCount || 1);
+    const avgMatchTime = matchTime / BigInt(fileCount || 1);
+    const avgTimePerLine = totalTime / BigInt(totalLines || 1);
+
+    const medianFileSize = calculateMedian(fileSizes);
+    const smallFiles = fileSizes.filter(size => size < 50).length;
+    const mediumFiles = fileSizes.filter(size => size >= 50 && size < 200).length;
+    const largeFiles = fileSizes.filter(size => size >= 200).length;
+
+    const page = `
+        <html>
+        <head><title>Timing Statistics</title></head>
+        <body>
+            <h1>Timing Statistics</h1>
+            <p>Processed ${fileCount} files</p>
+            <p>Total Lines Processed: ${totalLines}</p>
+            <p>Average Total Time: ${avgTotalTime / 1000n} µs</p>
+            <p>Average Match Time: ${avgMatchTime / 1000n} µs</p>
+            <p>Average Time Per Line: ${avgTimePerLine / 1000n} µs</p>
+            <p>Median File Size: ${medianFileSize} lines</p>
+            <p>File Size Distribution:</p>
+            <ul>
+                <li>Small Files (<50 lines): ${smallFiles}</li>
+                <li>Medium Files (50-199 lines): ${mediumFiles}</li>
+                <li>Large Files (200+ lines): ${largeFiles}</li>
+            </ul>
+        </body>
+        </html>
+    `;
+    res.send(page);
+});
+

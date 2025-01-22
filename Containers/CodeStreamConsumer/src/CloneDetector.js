@@ -1,8 +1,10 @@
-const emptyLine = /^\s*$/;
-const oneLineComment = /\/\/.*/;
-const oneLineMultiLineComment = /\/\*.*?\*\//; 
-const openMultiLineComment = /\/\*+[^\*\/]*$/;
-const closeMultiLineComment = /^[\*\/]*\*+\//;
+const emptyLine = /^\s*$/; // Matches only empty or whitespace-only lines
+const oneLineComment = /\/\/.*$/; // Matches single-line comments starting with //
+const openMultiLineComment = /\/\*.*$/; // Matches the start of multi-line comments (/*)
+const closeMultiLineComment = /^.*\*\//; // Matches the end of multi-line comments (*/)
+const oneLineMultiLineComment = /\/\*.*\*\//; // Matches single-line multi-line comments (/* ... */)
+
+
 
 const SourceLine = require('./SourceLine');
 const FileStorage = require('./FileStorage');
@@ -22,34 +24,38 @@ class CloneDetector {
     #filterLines(file) {
         let lines = file.contents.split('\n');
         let inMultiLineComment = false;
-        file.lines=[];
-
+        file.lines = []; // Initialize lines array
+    
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i];
-
-            if ( inMultiLineComment ) {
-                if ( -1 != line.search(closeMultiLineComment) ) {
+    
+            if (inMultiLineComment) {
+                if (line.search(closeMultiLineComment) !== -1) {
                     line = line.replace(closeMultiLineComment, '');
                     inMultiLineComment = false;
                 } else {
-                    line = '';
+                    continue; // Skip the line inside multi-line comments
                 }
             }
-
-            line = line.replace(emptyLine, '');
-            line = line.replace(oneLineComment, '');
-            line = line.replace(oneLineMultiLineComment, '');
-            
-            if ( -1 != line.search(openMultiLineComment) ) {
+    
+            line = line.replace(oneLineComment, ''); // Remove single-line comments
+            line = line.replace(oneLineMultiLineComment, ''); // Remove one-line multi-line comments
+    
+            if (line.search(openMultiLineComment) !== -1) {
                 line = line.replace(openMultiLineComment, '');
                 inMultiLineComment = true;
             }
-
-            file.lines.push( new SourceLine(i+1, line.trim()) );
+    
+            if (!line.match(emptyLine)) {
+                file.lines.push(new SourceLine(i + 1, line.trim()));
+            }
         }
-       
+    
+        console.log(`File: ${file.name}, Lines After Filtering: ${file.lines.length}`);
         return file;
     }
+    
+    
 
     #getContentLines(file) {
         return file.lines.filter( line => line.hasContent() );        
@@ -67,79 +73,81 @@ class CloneDetector {
         }
         return file;
     }
-    
     #chunkMatch(first, second) {
-        let match = true;
-
-        if (first.length != second.length) { match = false; }
-        for (let idx=0; idx < first.length; idx++) {
-            if (!first[idx].equals(second[idx])) { match = false; }
-        }
-
-        return match;
+        const crypto = require('crypto');
+    
+        const hash = (chunk) =>
+            crypto.createHash('sha256')
+                  .update(chunk.map(line => line.content).join('\n'))
+                  .digest('hex');
+    
+        return hash(first) === hash(second);
     }
+    
+    
+    
 
     #filterCloneCandidates(file, compareFile) {
-        // TODO
-        // For each chunk in file.chunks, find all #chunkMatch() in compareFile.chunks
-        // For each matching chunk, create a new Clone.
-        // Store the resulting (flat) array in file.instances.
-        // 
-        // TIP 1: Array.filter to find a set of matches, Array.map to return a new array with modified objects.
-        // TIP 2: You can daisy-chain calls to filter().map().filter().flat() etc.
-        // TIP 3: Remember that file.instances may have already been created, so only append to it.
-        //
-        // Return: file, including file.instances which is an array of Clone objects (or an empty array).
-        //
-
-        file.instances = file.instances || [];        
-        file.instances = file.instances.concat(newInstances);
-        return file;
-    }
-     
-    #expandCloneCandidates(file) {
-        // TODO
-        // For each Clone in file.instances, try to expand it with every other Clone
-        // (using Clone::maybeExpandWith(), which returns true if it could expand)
-        // 
-        // Comment: This should be doable with a reduce:
-        //          For every new element, check if it overlaps any element in the accumulator.
-        //          If it does, expand the element in the accumulator. If it doesn't, add it to the accumulator.
-        //
-        // ASSUME: As long as you traverse the array file.instances in the "normal" order, only forward expansion is necessary.
-        // 
-        // Return: file, with file.instances only including Clones that have been expanded as much as they can,
-        //         and not any of the Clones used during that expansion.
-        //
-
+        // Ensure instances array is initialized
+        file.instances = file.instances || [];
+    
+        // Loop through file chunks and compare with compareFile chunks
+        const matchingClones = file.chunks.flatMap((fileChunk, fileIndex) => {
+            return compareFile.chunks
+                .filter(compareChunk => this.#chunkMatch(fileChunk, compareChunk)) // Match chunks
+                .map(compareChunk => new Clone(file.name, compareFile.name, fileChunk, compareChunk)); // Create Clones
+        });
+    
+        // Append new clones to instances
+        file.instances = file.instances.concat(matchingClones);
         return file;
     }
     
-    #consolidateClones(file) {
-        // TODO
-        // For each clone, accumulate it into an array if it is new
-        // If it isn't new, update the existing clone to include this one too
-        // using Clone::addTarget()
-        // 
-        // TIP 1: Array.reduce() with an empty array as start value.
-        //        Push not-seen-before clones into the accumulator
-        // TIP 2: There should only be one match in the accumulator
-        //        so Array.find() and Clone::equals() will do nicely.
-        //
-        // Return: file, with file.instances containing unique Clone objects that may contain several targets
-        //
-
+     
+    #expandCloneCandidates(file) {
+        file.instances = file.instances.reduce((expandedInstances, currentClone) => {
+            // Check if the current clone can expand any existing clone
+            const existingClone = expandedInstances.find(existing => existing.maybeExpandWith(currentClone));
+            if (!existingClone) {
+                // If no existing clone can expand, add this as a new entry
+                expandedInstances.push(currentClone);
+            }
+            return expandedInstances;
+        }, []);
+    
         return file;
     }
+    
+    
+    #consolidateClones(file) {
+        file.instances = file.instances.reduce((accumulator, currentClone) => {
+            // Find existing clones matching the current clone
+            let existingClone = accumulator.find(clone => clone.equals(currentClone));
+            if (existingClone) {
+                // Merge targets if already existing
+                existingClone.addTarget(currentClone);
+            } else {
+                // Otherwise, add as a new clone
+                accumulator.push(currentClone);
+            }
+            return accumulator;
+        }, []);
+    
+        return file;
+    }
+    
     
 
     // Public Processing Steps
     // --------------------
     preprocess(file) {
-        return new Promise( (resolve, reject) => {
-            if (!file.name.endsWith('.java') ) {
-                reject(file.name + ' is not a java file. Discarding.');
-            } else if(this.#myFileStore.isFileProcessed(file.name)) {
+        return new Promise((resolve, reject) => {
+            console.log(`Preprocessing file: ${file.name}`);
+            if (!file.name.endsWith('.java')) {
+                console.log(`${file.name} is not a Java file.`);
+                resolve(file); // Allow all files for debugging
+            } else if (this.#myFileStore.isFileProcessed(file.name)) {
+                console.log(`${file.name} has already been processed.`);
                 reject(file.name + ' has already been processed.');
             } else {
                 resolve(file);

@@ -16,22 +16,19 @@ class FileStorage {
     get filenames() { return this.#myFileNames; }
 
     isFileProcessed(fileName) {
-        return false; // FIXME: sometimes this returns true even when it shouldn't. Probably a race condition.
+        // return false; // FIXME: sometimes this returns true even when it shouldn't. Probably a race condition.
         return this.#myFileNames.includes(fileName);
     }
 
     storeFile(file) {
         if (!this.isFileProcessed(file.name)) {
-            //console.log('Adding file', file.name, 'to storage. Now containing', 1+this.#myNumberOfFiles, 'files.');
             this.#myFileNames.push(file.name);
             this.#myNumberOfFiles++;
-
-            // FUTURE Use a database instead.
-            this.#myFiles.push(file);
+            this.#myFiles.push(file); // Replace with database insert in future
         }
-
         return file;
     }
+    
 
     * getAllFiles() {
         // FUTURE Convert this to use this.#myFileNames to fetch each file from a database instead.
